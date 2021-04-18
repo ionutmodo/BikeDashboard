@@ -1,29 +1,23 @@
 /*
- Name:		BikeDashboard.ino
- Created:	06-June-2020 16:17:48
- Author:	ionut
+    TinyGPSPlus: http://arduiniana.org/libraries/tinygpsplus/
+    GPS Guide: https://randomnerdtutorials.com/guide-to-neo-6m-gps-module-with-arduino/
+    Senzor IR:
+    - bec aprins => 0 logic
+    - bec stins => 1 logic
+    - puls: tranzitie 1 -> 0
 */
 
 #include <LiquidCrystal.h>
-#include <eeprom.h>
-#include "DHT.h"
 
-//// typedefs
-typedef unsigned long ulong;
-
-//// defines for DHT11 sensor
-#define DHT11_PIN 13
-#define DHT11_TYPE DHT11
-
-//// defines for LCD
-#define LCD_ROWS 2
-#define LCD_COLS 16
 #define LCD_PIN_RS 12
 #define LCD_PIN_EN 11
-#define LCD_PIN_D4 6
+#define LCD_PIN_D4 4
 #define LCD_PIN_D5 5
-#define LCD_PIN_D6 4
-#define LCD_PIN_D7 3
+#define LCD_PIN_D6 6
+#define LCD_PIN_D7 7
+
+#define LCD_COLS 16
+#define LCD_ROWS 2
 
 #define LCD_ROW_VAL_SPEED 0
 #define LCD_COL_VAL_SPEED 0
@@ -42,35 +36,147 @@ typedef unsigned long ulong;
 #define LCD_ROW_TXT_DISTANCE 1
 #define LCD_COL_TXT_DISTANCE 12
 
-//// defines to compute constant for speed
-// half of wheel length in meters since I have 2 reflectors (full length of 29 inch wheel, 231 cm = 2.31 m)
-#define WHEEL_LENGTH_M_HALF 1.155 
-#define WHEEL_LENGTH_KM_HALF 0.001155
+#define MOVING_AVERAGE_WINDOW_SIZE 2
 
-//// defines for interrupt
-#define INTERRUPT_IR_SENSOR 0
+typedef unsigned long ulong;
+typedef unsigned int uint;
 
-//// global variables
-char line[17];
-byte symbol_celsius_degree[8] = { B01110, B10001, B10001, B01110, B00000, B00000, B00000 };
-ulong last_pulse_time_us, last_lcd_update_ms;
-float temperature;
-const float C = WHEEL_LENGTH_M_HALF * 3600000.; // formula: L((micros()-last) / 10^6)* 3.6
-volatile float speed, distance, distance_total;
-
-//// global objects
-LiquidCrystal LCD(LCD_PIN_RS, LCD_PIN_EN, LCD_PIN_D4, LCD_PIN_D5, LCD_PIN_D6, LCD_PIN_D7);
-DHT dht(DHT11_PIN, DHT11_TYPE);
-
-//// methods
-void enable_interrupt()
+struct Node
 {
-    attachInterrupt(INTERRUPT_IR_SENSOR, ISR_count_IR_pulses, FALLING);
+    uint data;
+    Node *next;
+};
+
+class MovingAverage
+{
+private:
+    ulong window_size, sum, current_size;
+    Node *head, *tail;
+public:
+    MovingAverage(ulong window_size)
+    {
+        this->window_size = window_size;
+        this->current_size = 0;
+        this->sum = 0;
+        this->head = this->tail = NULL;
+    }
+    void add_data(ulong data)
+    {
+        // whatever we run below, add the data to the sum
+        this->sum += data;
+        if(this->current_size == 0)
+        {
+            ++(this->current_size);
+            this->head = new Node;
+            this->head->data = data;
+            this->head->next = NULL;
+            this->tail = this->head;
+        }
+        else if(0 < this->current_size && this->current_size < this->window_size)
+        {
+            ++(this->current_size);
+            Node *node = new Node;
+            node->data = data;
+            node->next = NULL;
+            this->tail->next = node;
+            this->tail = node;
+        }
+        else if(this->current_size == this->window_size)
+        {
+            // remove head data from the sum
+            this->sum -= this->head->data;
+            // set node to head
+            Node *node = this->head;
+            // move head to the second node
+            this->head = this->head->next;
+            // replace first node's data with new data
+            node->data = data;
+            // link it to null
+            node->next = NULL;
+            // make it last node in the list
+            this->tail->next = node;
+            // update tail
+            this->tail = node;
+        }
+    }
+    float compute_average()
+    {
+        float average = this->sum / ((float)this->current_size);
+        return average;
+    }
+    void show_data()
+    {
+        Serial.print(" ( ");
+        for(Node *p=this->head; p != NULL; p=p->next)
+        {
+            Serial.print(p->data);
+            Serial.print(' ');
+        }
+        Serial.print(") ");
+    }
+};
+
+char line[17];
+LiquidCrystal LCD(LCD_PIN_RS, LCD_PIN_EN, LCD_PIN_D4, LCD_PIN_D5, LCD_PIN_D6, LCD_PIN_D7);
+volatile MovingAverage movingAverage(MOVING_AVERAGE_WINDOW_SIZE);
+volatile long current_millis, last_time_millis, last_diff_millis, diff_millis, diff_for_serial, RATIO_THRESHOLD = 10;
+volatile long diff_ratio_slow_down, diff_ratio_speed_up;
+volatile long diff_ratio, min_diff, max_diff;
+volatile long false_pulses_count;
+volatile int is_pulse_correct;
+
+void setup()
+{  
+    Serial.begin(9600);
+
+    pinMode(2, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(2), ISR_count_IR_pulses, FALLING);
+    last_time_millis = millis();
+    last_diff_millis = 0;
+    false_pulses_count = 0;
+    delay(100);
 }
 
-void disable_interrupt()
+void loop()
 {
-    detachInterrupt(INTERRUPT_IR_SENSOR);
+}
+
+void ISR_count_IR_pulses()
+{
+    current_millis = millis();
+    diff_millis = current_millis - last_time_millis;
+    min_diff = min(last_diff_millis, diff_millis);
+    max_diff = max(last_diff_millis, diff_millis);
+    diff_ratio = max_diff / min_diff;
+
+    Serial.print(current_millis);
+    Serial.print(' ');
+    if(diff_ratio > RATIO_THRESHOLD) // filter out
+    {
+        ++false_pulses_count;
+        //is_pulse_correct = 0;
+        Serial.print(-diff_millis);
+        if(false_pulses_count == 3)
+        {
+            Serial.print('R');
+            false_pulses_count = 0; // reset this counter and reset the state
+            last_diff_millis = 0; // shold have set it to zero, but above i might have division by zero
+            last_time_millis = current_millis;
+        }
+        Serial.println(" -");
+    }
+    else // keep current value
+    {
+        is_pulse_correct = 1;
+        movingAverage.add_data(diff_millis);
+        false_pulses_count = 0;
+        last_diff_millis = diff_millis;
+        last_time_millis = current_millis;
+        Serial.print(last_diff_millis);
+        Serial.print(' ');
+        movingAverage.show_data();
+        Serial.println(movingAverage.compute_average());
+    }
 }
 
 void lcd_display(int col, int row, float value, int total_length, int n_decimals)
@@ -86,101 +192,19 @@ void lcd_display(int col, int row, float value, int total_length, int n_decimals
         LCD.print(line);
     }
 }
-
-volatile ulong t_us;
-void ISR_count_IR_pulses()
+void temp_code()
 {
-    t_us = micros() - last_pulse_time_us;
-    if (t_us > 42000) // threshold such that max speed is approx 100km/h
-    {
-        speed = C / t_us;
-        distance += WHEEL_LENGTH_KM_HALF;
-        distance_total += WHEEL_LENGTH_KM_HALF;
-        last_pulse_time_us = micros();
-    }
-}
-
-void write_total_distance_to_eeprom(float d)
-{
-    // Since d has 2 decimals, multiply it with 100 and then
-    // store it in the following way:
-    // EEPROM[0]: bits 0-7 of _distance_x_100
-    // EEPROM[1]: bits 8-15 of _distance_x_100
-    // EEPROM[2]: bits 16-23 of _distance_x_100
-
-    //Serial.print("write ");
-    //Serial.println(d);
-    ulong _distance_x_100 = (ulong)(d * 100.0);
-
-    EEPROM[0] = (byte)(_distance_x_100 & 0xFF);
-    _distance_x_100 = _distance_x_100 >> 8;
-
-    EEPROM[1] = (byte)(_distance_x_100 & 0xFF);
-    _distance_x_100 = _distance_x_100 >> 8;
-
-    EEPROM[2] = (byte)(_distance_x_100 & 0xFF);
-}
-
-float read_total_distance_to_eeprom()
-{
-    // Reads first 3 bytes from EEPROM and creates an ulong
-    // This ulong is stored in EEPROM multiplied by 100 and distance
-    // needs to be divided by 100 to have 2 decimal points an saved as float
-    // EEPROM[0]: bits 0-7
-    // EEPROM[1]: bits 8-15
-    // EEPROM[2]: bits 16-23
-    ulong _distance_x_100 = ((ulong)EEPROM[2] << 16) | ((ulong)EEPROM[1] << 8) | ((ulong)EEPROM[0]);
-    float d = _distance_x_100 / 100.0;
-    //Serial.print("read ");
-    //Serial.println(d);
-    return d;
-}
-
-void setup()
-{
-    Serial.begin(9600);
-    dht.begin();
-    LCD.begin(LCD_COLS, LCD_ROWS);
-
-    LCD.setCursor(LCD_COL_TXT_SPEED, LCD_ROW_TXT_SPEED);
-    LCD.print("km/h");
-
-    // create celsius symbol
-    LCD.createChar(0, symbol_celsius_degree);
-    LCD.setCursor(LCD_COL_TXT_TEMP, LCD_ROW_TXT_TEMP);
-    LCD.write(byte(0));
-
-    LCD.setCursor(LCD_COL_TXT_TEMP + 1, LCD_ROW_TXT_TEMP);
-    LCD.print("C");
-
-    LCD.setCursor(5, 1);
-    LCD.print("/");
-
-    LCD.setCursor(LCD_COL_TXT_DISTANCE, LCD_ROW_TXT_DISTANCE);
-    LCD.print("km");
-
-    distance = speed = 0.00;
-    distance_total = read_total_distance_to_eeprom();
-    last_pulse_time_us = micros();
-    last_lcd_update_ms = millis();
-    enable_interrupt();
-}
-
-void loop()
-{
-    // if no pulses are received for more than a few seconds, set speed to zero
-    if (micros() - last_pulse_time_us > 5000000)
-    {
-        speed = 0.00;
-    }
-
-    if (millis() - last_lcd_update_ms > 1000)
-    {
-        write_total_distance_to_eeprom(distance_total);
-        lcd_display(LCD_COL_VAL_SPEED, LCD_ROW_VAL_SPEED, speed, 4, 1);
-        lcd_display(LCD_COL_VAL_TEMP, LCD_ROW_VAL_TEMP, dht.readTemperature(), 4, 1);
-        lcd_display(LCD_COL_VAL_DISTANCE, LCD_ROW_VAL_DISTANCE, distance, 5, 2);
-        lcd_display(LCD_COL_VAL_DISTANCE_TOTAL, LCD_ROW_VAL_DISTANCE_TOTAL, distance_total, 6, 2);
-        last_lcd_update_ms = millis();
-    }
+    /*LCD.begin(16, 2);
+    LCD.setCursor(0, 0);
+    LCD.print("R=");
+    LCD.setCursor(6, 0);
+    LCD.print("F=");
+    LCD.setCursor(0, 1);
+    LCD.print("RP=");
+    LCD.setCursor(9, 1);
+    LCD.print("TM=");
+    lcd_display(2, 0, AmountOfReadings, 3, 0);
+    lcd_display(9, 0, FrequencyReal, 6, 0);
+    lcd_display(3, 1, RPM, 5, 0);  
+    lcd_display(12, 1, average, 4, 0);*/
 }
