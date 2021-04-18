@@ -37,6 +37,7 @@
 #define LCD_COL_TXT_DISTANCE 12
 
 #define MOVING_AVERAGE_WINDOW_SIZE 2
+#define DIFF_RATIO_THRESHOLD 10
 
 typedef unsigned long ulong;
 typedef unsigned int uint;
@@ -119,11 +120,8 @@ public:
 char line[17];
 LiquidCrystal LCD(LCD_PIN_RS, LCD_PIN_EN, LCD_PIN_D4, LCD_PIN_D5, LCD_PIN_D6, LCD_PIN_D7);
 volatile MovingAverage movingAverage(MOVING_AVERAGE_WINDOW_SIZE);
-volatile long current_millis, last_time_millis, last_diff_millis, diff_millis, diff_for_serial, RATIO_THRESHOLD = 10;
-volatile long diff_ratio_slow_down, diff_ratio_speed_up;
-volatile long diff_ratio, min_diff, max_diff;
-volatile long false_pulses_count;
-volatile int is_pulse_correct;
+volatile long current_millis, last_time_millis, last_diff_millis, diff_millis, diff_ratio, false_pulses_count;
+volatile float average_diff, speed_kmh, distance_covered, rpm;
 
 void setup()
 {  
@@ -139,43 +137,50 @@ void setup()
 
 void loop()
 {
+    Serial.print(rpm);
+    Serial.print(' ');
+    Serial.print(speed_kmh);
+    Serial.print(' ');
+    Serial.println(distance_covered);
 }
 
 void ISR_count_IR_pulses()
 {
     current_millis = millis();
     diff_millis = current_millis - last_time_millis;
-    min_diff = min(last_diff_millis, diff_millis);
-    max_diff = max(last_diff_millis, diff_millis);
-    diff_ratio = max_diff / min_diff;
-
-    Serial.print(current_millis);
-    Serial.print(' ');
-    if(diff_ratio > RATIO_THRESHOLD) // filter out
+    diff_ratio = max(last_diff_millis, diff_millis) / min(last_diff_millis, diff_millis);
+    if(diff_ratio > DIFF_RATIO_THRESHOLD) // filter out
     {
         ++false_pulses_count;
-        //is_pulse_correct = 0;
-        Serial.print(-diff_millis);
         if(false_pulses_count == 3)
         {
-            Serial.print('R');
             false_pulses_count = 0; // reset this counter and reset the state
             last_diff_millis = 0; // shold have set it to zero, but above i might have division by zero
             last_time_millis = current_millis;
         }
-        Serial.println(" -");
     }
     else // keep current value
     {
-        is_pulse_correct = 1;
         movingAverage.add_data(diff_millis);
         false_pulses_count = 0;
         last_diff_millis = diff_millis;
         last_time_millis = current_millis;
-        Serial.print(last_diff_millis);
-        Serial.print(' ');
-        movingAverage.show_data();
-        Serial.println(movingAverage.compute_average());
+        average_diff = movingAverage.compute_average();
+        distance_covered += 235; // wheel length in cm
+        speed_kmh = 8460 / average_diff;
+        rpm = 60000 / average_diff;
+        /*
+            Formula for speed:
+                average  ms ... 2.35 m
+                3600 000 ms ... x km/h !!!
+                x = speed(km/h) = (3 600 000 ms * 2.35 m) / average ms  / 1000 = 8460 / average
+            Formula for distance travelled:
+                add wheel length at each revolution
+            Formula for RPM:
+                average ms ... 1 rot
+                 60 000 ms ... x rot
+                 x = RPM = 60 000 ms * rot / average ms
+        */
     }
 }
 
