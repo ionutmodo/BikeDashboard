@@ -144,7 +144,7 @@ DHT dht(DHT11_PIN, DHT11_TYPE);
 
 void setup()
 {
-    /*LCD.begin(LCD_COLS, LCD_ROWS);
+    LCD.begin(LCD_COLS, LCD_ROWS);
     LCD.setCursor(LCD_COL_TXT_SPEED, LCD_ROW_TXT_SPEED);
     LCD.print("km/h");
     
@@ -159,9 +159,9 @@ void setup()
     LCD.print("/");
 
     LCD.setCursor(LCD_COL_TXT_DISTANCE, LCD_ROW_TXT_DISTANCE);
-    LCD.print("km");*/
+    LCD.print("km");
     
-    //dht.begin();
+    dht.begin();
     Serial.begin(DEFAULT_BAUD_RATE);
 
     pinMode(2, INPUT_PULLUP);
@@ -181,13 +181,13 @@ void setup()
 
 void loop()
 {
-    /*update_current_millis = millis();
+    update_current_millis = millis();
     if(update_current_millis - update_last_millis > UPDATE_INTERVAL_MS)
     {
         update_last_millis = update_current_millis;
-        /*write_total_distance_to_eeprom(var_distance_total);
+        write_total_distance_to_eeprom(var_distance_total);
         lcd_display(LCD_COL_VAL_SPEED, LCD_ROW_VAL_SPEED, var_speed_kmh, 4, 2);
-        //lcd_display(LCD_COL_VAL_TEMP, LCD_ROW_VAL_TEMP, dht.readTemperature(), 4, 1);
+        lcd_display(LCD_COL_VAL_TEMP, LCD_ROW_VAL_TEMP, dht.readTemperature(), 4, 1);
         lcd_display(LCD_COL_VAL_DISTANCE, LCD_ROW_VAL_DISTANCE, var_distance_temp / 100000.0, 5, 2);
         lcd_display(LCD_COL_VAL_DISTANCE_TOTAL, LCD_ROW_VAL_DISTANCE_TOTAL, var_distance_total / 100000.0, 6, 2);
         Serial.print(var_rpm);
@@ -195,33 +195,30 @@ void loop()
         Serial.print(var_speed_kmh);
         Serial.print(' ');
         Serial.println(var_distance_temp);
-    }*/
+    }
 }
 
 void ISR_count_IR_pulses()
 {
     pulse_current_millis = millis();
     pulse_diff_millis = pulse_current_millis - pulse_last_time_millis;
-    /*if(pulse_last_diff_millis == 0 || pulse_diff_millis == 0)
-        diff_pulse_ratio = PULSE_RATIO_THRESHOLD + 1;
-    else*/
-        diff_pulse_ratio = max(pulse_last_diff_millis, pulse_diff_millis) / min(pulse_last_diff_millis, pulse_diff_millis);
-    Serial.print(pulse_current_millis);
-    Serial.print(' ');
-    Serial.print(pulse_diff_millis);
-    Serial.print(' ');
+    diff_pulse_ratio = max(pulse_last_diff_millis, pulse_diff_millis) / min(pulse_last_diff_millis, pulse_diff_millis);
+//    Serial.print(pulse_current_millis);
+//    Serial.print(' ');
+//    Serial.print(pulse_diff_millis);
+//    Serial.print(' ');
     if(diff_pulse_ratio > PULSE_RATIO_THRESHOLD) // filter out
     {
         ++pulse_count_invalids;
 //        Serial.print(pulse_diff_millis);
         if(pulse_count_invalids == CONST_MAX_INVALID_PULSES)
         {
-            Serial.print(" R ");
+//            Serial.print(" R ");
             pulse_count_invalids = 0; // reset this counter and reset the state
             pulse_last_diff_millis = 0; // shold have set it to zero, but above i might have division by zero
             pulse_last_time_millis = pulse_current_millis;
         }
-        Serial.println(" -");
+//        Serial.println(" -");
     }
     else // keep current value
     {
@@ -233,8 +230,8 @@ void ISR_count_IR_pulses()
         var_distance_temp += WHEEL_LENGTH_CM;
         var_distance_total += WHEEL_LENGTH_CM;
         var_speed_kmh = CONST_SPEED_KMH / average_diff;
-        movingAverage.show_data();
-        Serial.println(average_diff);
+//        movingAverage.show_data();
+//        Serial.println(average_diff);
 //        Serial.println(var_speed_kmh);
         //var_rpm = 60000 / average_diff;
         /*
