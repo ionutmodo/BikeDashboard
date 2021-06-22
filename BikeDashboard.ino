@@ -1,4 +1,5 @@
 /*
+    LCD_display_i2c: https://lastminuteengineers.com/i2c-lcd-arduino-tutorial/
     TinyGPSPlus: http://arduiniana.org/libraries/tinygpsplus/
     GPS Guide: https://randomnerdtutorials.com/guide-to-neo-6m-gps-module-with-arduino/
     Senzor IR:
@@ -83,20 +84,21 @@ public:
     }
 };
 
-#include <LiquidCrystal.h>
+#include <LiquidCrystal_I2C.h>
 #include <EEPROM.h>
 #include "DHT.h"
 
 /* LCD DEFINES */
-#define LCD_PIN_RS 12
-#define LCD_PIN_EN 11
-#define LCD_PIN_D4 4
-#define LCD_PIN_D5 5
-#define LCD_PIN_D6 6
-#define LCD_PIN_D7 7
+//#define LCD_PIN_RS 12
+//#define LCD_PIN_EN 11
+//#define LCD_PIN_D4 4
+//#define LCD_PIN_D5 5
+//#define LCD_PIN_D6 6
+//#define LCD_PIN_D7 7
 
 #define LCD_COLS 16
 #define LCD_ROWS 2
+#define LCD_I2C_ADDRESS 0x27
 
 #define LCD_ROW_VAL_SPEED 0
 #define LCD_COL_VAL_SPEED 0
@@ -121,7 +123,9 @@ public:
 #define DHT11_PIN 10
 #define DHT11_TYPE DHT11
 
-#define IR_PIN 2 // pin 2 has interrupt 0
+#define IR_PIN 2 // pin #2 has interrupt 0 (INT0)
+#define RESET_DISTANCE_BUTTON_PIN 3
+
 #define DEFAULT_BAUD_RATE 9600
 #define UPDATE_INTERVAL_MS 1000
 #define MOVING_AVERAGE_WINDOW_SIZE 2
@@ -129,8 +133,10 @@ public:
 #define WHEEL_LENGTH_CM 235
 #define CONST_SPEED_KMH (3600000 * WHEEL_LENGTH_CM / 100 / 1000) // = 8460
 #define CONST_MAX_INVALID_PULSES 3
+#define CONST_ZERORIZE_SPEED_THRESHOLD_MS 3000
 
 char line[17];
+int display_length;
 byte symbol_celsius_degree[8] = { B01110, B10001, B10001, B01110, B00000, B00000, B00000 };
 volatile MovingAverage movingAverage(MOVING_AVERAGE_WINDOW_SIZE);
 volatile long pulse_current_millis, pulse_last_time_millis;
@@ -139,12 +145,15 @@ volatile long var_distance_temp, var_distance_total, var_rpm;
 volatile float average_diff, var_speed_kmh;
 ulong update_current_millis, update_last_millis;
 
-LiquidCrystal LCD(LCD_PIN_RS, LCD_PIN_EN, LCD_PIN_D4, LCD_PIN_D5, LCD_PIN_D6, LCD_PIN_D7);
+LiquidCrystal_I2C LCD(LCD_I2C_ADDRESS, LCD_COLS, LCD_ROWS);
 DHT dht(DHT11_PIN, DHT11_TYPE);
 
 void setup()
 {
-    LCD.begin(LCD_COLS, LCD_ROWS);
+    LCD.init();
+    LCD.clear();
+    LCD.backlight();
+    
     LCD.setCursor(LCD_COL_TXT_SPEED, LCD_ROW_TXT_SPEED);
     LCD.print("km/h");
     
@@ -164,11 +173,14 @@ void setup()
     dht.begin();
     Serial.begin(DEFAULT_BAUD_RATE);
 
-    pinMode(2, INPUT_PULLUP);
+    pinMode(IR_PIN, INPUT_PULLUP);
+    pinMode(RESET_DISTANCE_BUTTON_PIN, INPUT_PULLUP);
+    
     attachInterrupt(digitalPinToInterrupt(IR_PIN), ISR_count_IR_pulses, FALLING);
 
     var_distance_temp = 0;
-    // read total_distance from EEPROM   
+    // read total_distance from EEPROM
+    // fix problem when stopping (zerorize all stats if no pulse is received for X seconds)
     //EEPROM_clear();
     
     pulse_last_time_millis = millis();
@@ -182,19 +194,37 @@ void setup()
 void loop()
 {
     update_current_millis = millis();
+
+    // update display data
     if(update_current_millis - update_last_millis > UPDATE_INTERVAL_MS)
     {
         update_last_millis = update_current_millis;
         write_total_distance_to_eeprom(var_distance_total);
-        lcd_display(LCD_COL_VAL_SPEED, LCD_ROW_VAL_SPEED, var_speed_kmh, 4, 2);
+        lcd_display(LCD_COL_VAL_SPEED, LCD_ROW_VAL_SPEED, (var_speed_kmh >= 100) ? 0 : var_speed_kmh, (var_speed_kmh < 10) ? 3 : 4, 2);
         lcd_display(LCD_COL_VAL_TEMP, LCD_ROW_VAL_TEMP, dht.readTemperature(), 4, 1);
         lcd_display(LCD_COL_VAL_DISTANCE, LCD_ROW_VAL_DISTANCE, var_distance_temp / 100000.0, 5, 2);
         lcd_display(LCD_COL_VAL_DISTANCE_TOTAL, LCD_ROW_VAL_DISTANCE_TOTAL, var_distance_total / 100000.0, 6, 2);
+        /*
         Serial.print(var_rpm);
         Serial.print(' ');
         Serial.print(var_speed_kmh);
         Serial.print(' ');
         Serial.println(var_distance_temp);
+        */
+    }
+
+    // reset temporary distance
+    if(digitalRead(RESET_DISTANCE_BUTTON_PIN) == LOW)
+    {
+        var_distance_temp = 0;
+    }
+
+    // set speed to zero if no pulses are received for a specific time
+    
+    // set speed to zero if no pulses are received for a specific time
+    if(millis() - pulse_last_time_millis > CONST_ZERORIZE_SPEED_THRESHOLD_MS)
+    {
+        var_speed_kmh = 0.00;
     }
 }
 
@@ -314,3 +344,36 @@ void EEPROM_clear()
     ulong fractional = (dist_cm % 100000) / 1000;
     lcd_display(dec_col, dec_row,
 }*/
+
+void find_i2c_address() {
+    Serial.begin (9600);
+
+  // Leonardo: wait for serial port to connect
+  while (!Serial) 
+    {
+    }
+
+  Serial.println ();
+  Serial.println ("I2C scanner. Scanning ...");
+  byte count = 0;
+  
+  Wire.begin();
+  for (byte i = 8; i < 120; i++)
+  {
+    Wire.beginTransmission (i);
+    if (Wire.endTransmission () == 0)
+      {
+      Serial.print ("Found address: ");
+      Serial.print (i, DEC);
+      Serial.print (" (0x");
+      Serial.print (i, HEX);
+      Serial.println (")");
+      count++;
+      delay (1);  // maybe unneeded?
+      } // end of good response
+  } // end of for loop
+  Serial.println ("Done.");
+  Serial.print ("Found ");
+  Serial.print (count, DEC);
+  Serial.println (" device(s).");
+}
