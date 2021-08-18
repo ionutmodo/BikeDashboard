@@ -6,6 +6,10 @@
     - bec aprins => 0 logic
     - bec stins => 1 logic
     - puls: tranzitie 1 -> 0
+
+    Arduino Nano settings:
+    - Board: Arduino Nano
+    - Processor: ATMega328P simple
 */
 typedef unsigned long ulong;
 
@@ -96,34 +100,35 @@ public:
 //#define LCD_PIN_D6 6
 //#define LCD_PIN_D7 7
 
-#define LCD_COLS 16
-#define LCD_ROWS 2
+#define LCD_COLS 20
+#define LCD_ROWS 4
 #define LCD_I2C_ADDRESS 0x27
 
-#define LCD_ROW_VAL_SPEED 0
-#define LCD_COL_VAL_SPEED 0
-#define LCD_ROW_TXT_SPEED 0
-#define LCD_COL_TXT_SPEED 5
+#define LCD_ROW_TXT_SPEED 0 // the "Speed(km/h):" text
+#define LCD_COL_TXT_SPEED 0
+#define LCD_ROW_VAL_SPEED 0 // speed value
+#define LCD_COL_VAL_SPEED 15
 
-#define LCD_ROW_VAL_TEMP 0
-#define LCD_COL_VAL_TEMP 10
-#define LCD_ROW_TXT_TEMP 0
-#define LCD_COL_TXT_TEMP 14
+#define LCD_ROW_TXT_DISTANCE_CRT 1 // the "Crt dist:" text
+#define LCD_COL_TXT_DISTANCE_CRT 0
+#define LCD_ROW_VAL_DISTANCE_CRT 1 // the current distance value
+#define LCD_COL_VAL_DISTANCE_CRT 15
 
-#define LCD_ROW_DISTANCE_SEPARATOR 1
-#define LCD_COL_DISTANCE_SEPARATOR 5
-#define LCD_ROW_VAL_DISTANCE 1
-#define LCD_COL_VAL_DISTANCE 0
-#define LCD_ROW_VAL_DISTANCE_TOTAL 1
-#define LCD_COL_VAL_DISTANCE_TOTAL 6
-#define LCD_ROW_TXT_DISTANCE 1
-#define LCD_COL_TXT_DISTANCE 12
+#define LCD_ROW_TXT_DISTANCE_TOTAL 2 // the "Total dist:" text
+#define LCD_COL_TXT_DISTANCE_TOTAL 0
+#define LCD_ROW_VAL_DISTANCE_TOTAL 2 // the total distance value
+#define LCD_COL_VAL_DISTANCE_TOTAL 14
+
+#define LCD_ROW_TXT_TEMP 3 // the "Temp. (*C):" text
+#define LCD_COL_TXT_TEMP 0
+#define LCD_ROW_VAL_TEMP 3 // the temp value
+#define LCD_COL_VAL_TEMP 15
 
 /* LCD DEFINES */
 #define DHT11_PIN 10
 #define DHT11_TYPE DHT11
 
-#define IR_PIN 2 // pin #2 has interrupt 0 (INT0)
+#define HALL_PIN 2 // pin #2 has interrupt 0 (INT0)
 #define RESET_DISTANCE_BUTTON_PIN 3
 
 #define DEFAULT_BAUD_RATE 9600
@@ -153,35 +158,37 @@ void setup()
     LCD.init();
     LCD.clear();
     LCD.backlight();
-    
+
     LCD.setCursor(LCD_COL_TXT_SPEED, LCD_ROW_TXT_SPEED);
-    LCD.print("km/h");
-    
-    LCD.createChar(0, symbol_celsius_degree);
+    LCD.print("Speed(km/h):");
+
     LCD.setCursor(LCD_COL_TXT_TEMP, LCD_ROW_TXT_TEMP);
+    LCD.print("Temp( C):");
+
+    LCD.createChar(0, symbol_celsius_degree);
+    LCD.setCursor(LCD_COL_TXT_TEMP + 5, LCD_ROW_TXT_TEMP);
     LCD.write(byte(0));
 
-    LCD.setCursor(LCD_COL_TXT_TEMP + 1, LCD_ROW_TXT_TEMP);
-    LCD.print("C");
-
-    LCD.setCursor(LCD_COL_DISTANCE_SEPARATOR, LCD_ROW_DISTANCE_SEPARATOR);
-    LCD.print("/");
-
-    LCD.setCursor(LCD_COL_TXT_DISTANCE, LCD_ROW_TXT_DISTANCE);
-    LCD.print("km");
+    LCD.setCursor(LCD_COL_TXT_DISTANCE_CRT, LCD_ROW_TXT_DISTANCE_CRT);
+    LCD.print("Crt dist(km):");
+    
+    LCD.setCursor(LCD_COL_TXT_DISTANCE_TOTAL, LCD_ROW_TXT_DISTANCE_TOTAL);
+    LCD.print("Tot dist(km):");
     
     dht.begin();
     Serial.begin(DEFAULT_BAUD_RATE);
 
-    pinMode(IR_PIN, INPUT_PULLUP);
+    pinMode(HALL_PIN, INPUT_PULLUP);
     pinMode(RESET_DISTANCE_BUTTON_PIN, INPUT_PULLUP);
     
-    attachInterrupt(digitalPinToInterrupt(IR_PIN), ISR_count_IR_pulses, FALLING);
+    attachInterrupt(digitalPinToInterrupt(HALL_PIN), ISR_count_IR_pulses, FALLING);
 
     var_distance_temp = 0;
     // read total_distance from EEPROM
     // fix problem when stopping (zerorize all stats if no pulse is received for X seconds)
-    //EEPROM_clear();
+//    EEPROM_clear();
+    var_distance_total = read_total_distance_from_eeprom();
+//    var_distance_total = 2000000;
     
     pulse_last_time_millis = millis();
     pulse_last_diff_millis = 0;
@@ -200,10 +207,10 @@ void loop()
     {
         update_last_millis = update_current_millis;
         write_total_distance_to_eeprom(var_distance_total);
-        lcd_display(LCD_COL_VAL_SPEED, LCD_ROW_VAL_SPEED, (var_speed_kmh >= 100) ? 0 : var_speed_kmh, (var_speed_kmh < 10) ? 3 : 4, 2);
-        lcd_display(LCD_COL_VAL_TEMP, LCD_ROW_VAL_TEMP, dht.readTemperature(), 4, 1);
-        lcd_display(LCD_COL_VAL_DISTANCE, LCD_ROW_VAL_DISTANCE, var_distance_temp / 100000.0, 5, 2);
+        lcd_display(LCD_COL_VAL_SPEED, LCD_ROW_VAL_SPEED, var_speed_kmh, 5, 2); // (var_speed_kmh < 10) ? 3 : 4
+        lcd_display(LCD_COL_VAL_DISTANCE_CRT, LCD_ROW_VAL_DISTANCE_CRT, var_distance_temp / 100000.0, 5, 2);
         lcd_display(LCD_COL_VAL_DISTANCE_TOTAL, LCD_ROW_VAL_DISTANCE_TOTAL, var_distance_total / 100000.0, 6, 2);
+        lcd_display(LCD_COL_VAL_TEMP, LCD_ROW_VAL_TEMP, dht.readTemperature(), 5, 2);
         /*
         Serial.print(var_rpm);
         Serial.print(' ');
