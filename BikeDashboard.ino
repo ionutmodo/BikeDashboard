@@ -11,6 +11,11 @@
     - Board: Arduino Nano
     - Processor: ATMega328P simple
 */
+
+#include <LiquidCrystal_I2C.h>
+#include <EEPROM.h>
+#include "DHT.h"
+
 typedef unsigned long ulong;
 
 struct Node
@@ -88,9 +93,87 @@ public:
     }
 };
 
-#include <LiquidCrystal_I2C.h>
-#include <EEPROM.h>
-#include "DHT.h"
+
+class MemoryHandler
+{
+private:
+    static int const LSB_POS_TOTAL_DIST=0; // 0 to 3
+    static int const LSB_POS_CRT_DIST=4; // 4 to 8
+    
+    void _write_distance(ulong dist, int start)
+    {
+        int i;
+        for(i=start; i<start+4; ++i)
+        {
+            EEPROM[i] = (byte) (dist & 0xFF);
+            dist = dist >> 8;
+        }
+    }
+    
+    ulong _read_distance(int start)
+    {
+        // Reads the 4 bytes from EEPROM at positions [pos_start, pos_stop] and creates an ulong
+        // This ulong represents the distance travelled in centimeters (total or current)
+        // The distance needs to be divided by 100 000 to have two decimal points in km
+        // EEPROM[start+0]: bits 0-7
+        // EEPROM[start+1]: bits 8-15
+        // EEPROM[start+2]: bits 16-23
+        // EEPROM[start+3]: bits 24-31
+        ulong dist_cm = 0;
+        int i, shift_pos=0;
+        for(i=0; i<4; ++i)
+        {
+            dist_cm = dist_cm | ((ulong)EEPROM[start+i] << shift_pos);
+            shift_pos += 8;
+        }
+        return dist_cm;
+    }
+public:
+    static int const MODE_TOTAL_DIST=0, MODE_CRT_DIST=1;
+
+    static void show_memory()
+    {
+        for (int i = 0; i < EEPROM.length(); ++i)
+        {
+            Serial.print(EEPROM[i]);
+            if (i % 32 == 31)
+                Serial.println();
+            else
+                Serial.print(' ');
+        }
+    }
+    
+    static void clear_memory()
+    {
+        for (int i = 0; i < EEPROM.length(); ++i)
+            EEPROM[i] = (byte)0;
+    }
+    
+    void write_distance(ulong dist, int mode)
+    {
+        if(mode == MODE_TOTAL_DIST)
+        {
+            _write_distance(dist, LSB_POS_TOTAL_DIST);
+        }
+        if(mode == MODE_CRT_DIST)
+        {
+            _write_distance(dist, LSB_POS_CRT_DIST);
+        }
+    }
+    
+    ulong read_distance(int mode)
+    {
+        if(mode == MODE_TOTAL_DIST)
+        {
+            return _read_distance(LSB_POS_TOTAL_DIST);
+        }
+        if(mode == MODE_CRT_DIST)
+        {
+            return _read_distance(LSB_POS_CRT_DIST);
+        }
+        return (ulong) 0;
+    }
+};
 
 /* LCD DEFINES */
 //#define LCD_PIN_RS 12
@@ -129,7 +212,9 @@ public:
 #define DHT11_TYPE DHT11
 
 #define HALL_PIN 2 // pin #2 has interrupt 0 (INT0)
-#define RESET_DISTANCE_BUTTON_PIN 3
+#define RESET_DISTANCE_BUTTON_PIN 3 // pin #3 has interrupt 1 (INT1), but I use digitalRead
+#define RESET_CRT_DIST_TIMEOUT_MS 3000
+#define RESET_TOTAL_DIST_TIMEOUT_MS 5000
 
 #define DEFAULT_BAUD_RATE 9600
 #define UPDATE_INTERVAL_MS 1000
@@ -140,6 +225,7 @@ public:
 #define CONST_MAX_INVALID_PULSES 3
 #define CONST_ZERORIZE_SPEED_THRESHOLD_MS 3000
 
+
 char line[17];
 int display_length;
 byte symbol_celsius_degree[8] = { B01110, B10001, B10001, B01110, B00000, B00000, B00000 };
@@ -148,10 +234,11 @@ volatile long pulse_current_millis, pulse_last_time_millis;
 volatile long pulse_last_diff_millis, pulse_diff_millis, diff_pulse_ratio, pulse_count_invalids;
 volatile long var_distance_temp, var_distance_total, var_rpm;
 volatile float average_diff, var_speed_kmh;
-ulong update_current_millis, update_last_millis;
+ulong update_current_millis, update_last_millis, button_last_time, button_time_diff;
 
 LiquidCrystal_I2C LCD(LCD_I2C_ADDRESS, LCD_COLS, LCD_ROWS);
 DHT dht(DHT11_PIN, DHT11_TYPE);
+MemoryHandler mem;
 
 void setup()
 {
@@ -181,14 +268,10 @@ void setup()
     pinMode(HALL_PIN, INPUT_PULLUP);
     pinMode(RESET_DISTANCE_BUTTON_PIN, INPUT_PULLUP);
     
-    attachInterrupt(digitalPinToInterrupt(HALL_PIN), ISR_count_IR_pulses, FALLING);
+    attachInterrupt(digitalPinToInterrupt(HALL_PIN), ISR_count_hall_pulses, FALLING);
 
-    var_distance_temp = 0;
-    // read total_distance from EEPROM
-    // fix problem when stopping (zerorize all stats if no pulse is received for X seconds)
-//    EEPROM_clear();
-    var_distance_total = read_total_distance_from_eeprom();
-//    var_distance_total = 2000000;
+    var_distance_temp = mem.read_distance(MemoryHandler::MODE_CRT_DIST);
+    var_distance_total = mem.read_distance(MemoryHandler::MODE_TOTAL_DIST);
     
     pulse_last_time_millis = millis();
     pulse_last_diff_millis = 0;
@@ -206,7 +289,8 @@ void loop()
     if(update_current_millis - update_last_millis > UPDATE_INTERVAL_MS)
     {
         update_last_millis = update_current_millis;
-        write_total_distance_to_eeprom(var_distance_total);
+        mem.write_distance(var_distance_temp, MemoryHandler::MODE_CRT_DIST);
+        mem.write_distance(var_distance_total, MemoryHandler::MODE_TOTAL_DIST);
         lcd_display(LCD_COL_VAL_SPEED, LCD_ROW_VAL_SPEED, var_speed_kmh, 5, 2); // (var_speed_kmh < 10) ? 3 : 4
         lcd_display(LCD_COL_VAL_DISTANCE_CRT, LCD_ROW_VAL_DISTANCE_CRT, var_distance_temp / 100000.0, 5, 2);
         lcd_display(LCD_COL_VAL_DISTANCE_TOTAL, LCD_ROW_VAL_DISTANCE_TOTAL, var_distance_total / 100000.0, 6, 2);
@@ -220,13 +304,20 @@ void loop()
         */
     }
 
-    // reset temporary distance
-    if(digitalRead(RESET_DISTANCE_BUTTON_PIN) == LOW)
-    {
-        var_distance_temp = 0;
+    if(digitalRead(RESET_DISTANCE_BUTTON_PIN) == HIGH) {
+        button_last_time = millis();
     }
-
-    // set speed to zero if no pulses are received for a specific time
+    else {
+        button_time_diff = millis() - button_last_time;
+        if(button_time_diff > RESET_CRT_DIST_TIMEOUT_MS) {
+            var_distance_temp = 0;
+            mem.write_distance(var_distance_temp, MemoryHandler::MODE_CRT_DIST);
+            if(button_time_diff > RESET_TOTAL_DIST_TIMEOUT_MS) {
+                var_distance_total = 0;
+                mem.write_distance(var_distance_total, MemoryHandler::MODE_TOTAL_DIST);
+            }
+        }
+    }
     
     // set speed to zero if no pulses are received for a specific time
     if(millis() - pulse_last_time_millis > CONST_ZERORIZE_SPEED_THRESHOLD_MS)
@@ -235,7 +326,7 @@ void loop()
     }
 }
 
-void ISR_count_IR_pulses()
+void ISR_count_hall_pulses()
 {
     pulse_current_millis = millis();
     pulse_diff_millis = pulse_current_millis - pulse_last_time_millis;
@@ -299,58 +390,6 @@ void lcd_display(int col, int row, float value, int total_length, int n_decimals
         LCD.print(line);
     }
 }
-
-void write_total_distance_to_eeprom(ulong d)
-{
-    // Save bytes of d in reverse order in EEPROM
-    // EEPROM[0]: save bits 0-7 of d (LSB)
-    // EEPROM[1]: save bits 8-15 of d
-    // EEPROM[2]: save bits 16-23 of d
-    // EEPROM[3]: save bits 24-31 of d (MSB)
-
-    EEPROM[0] = (byte)(d & 0xFF); d = d >> 8;
-    EEPROM[1] = (byte)(d & 0xFF); d = d >> 8;
-    EEPROM[2] = (byte)(d & 0xFF); d = d >> 8;
-    EEPROM[3] = (byte)(d);
-}
-
-ulong read_total_distance_from_eeprom()
-{
-    // Reads first 4 bytes from EEPROM and creates an ulong
-    // This ulong represents the total distance travelled in centimeters
-    // The distance needs to be divided by 100 000 to have two decimal points in km/h
-    // EEPROM[0]: bits 0-7
-    // EEPROM[1]: bits 8-15
-    // EEPROM[2]: bits 16-23
-    // EEPROM[3]: bits 24-31
-    ulong total_dist_cm = ((ulong)EEPROM[3] << 24) | ((ulong)EEPROM[2] << 16) | ((ulong)EEPROM[1] << 8) | ((ulong)EEPROM[0]);
-    return total_dist_cm;
-}
-
-void EEPROM_show()
-{
-    for (int i = 0; i < EEPROM.length(); ++i)
-    {
-        Serial.print(EEPROM[i]);
-        if (i % 32 == 31)
-            Serial.println();
-        else
-            Serial.print(' ');
-    }
-}
-
-void EEPROM_clear()
-{
-    for (int i = 0; i < EEPROM.length(); ++i)
-        EEPROM[i] = (byte)0;
-}
-
-/*void lcd_display_distance_cm(int dec_col, int dec_row, int frac_col, int frac_row, ulong dist_cm)
-{
-    ulong decimal = dist_cm / 100000;
-    ulong fractional = (dist_cm % 100000) / 1000;
-    lcd_display(dec_col, dec_row,
-}*/
 
 void find_i2c_address() {
     Serial.begin (9600);
