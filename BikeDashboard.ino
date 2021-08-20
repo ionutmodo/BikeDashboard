@@ -464,13 +464,8 @@ public:
         lcd_display(LCD_COL_VAL_AVG_SPEED, LCD_ROW_VAL_AVG_SPEED, avgSpeed.compute_average(), 5, 2);
 
         LCD.setCursor(LCD_COL_VAL_AVG_PACE, LCD_ROW_VAL_AVG_PACE);
-
-        int x = (int) var_avg_pace_skm;
-        int y = (int) (var_avg_pace_skm / 60);
-        int z = (int) (var_avg_pace_skm % 60);
-        sprintf(time_string, "%02dm%02ds", y, z);
+        sprintf(time_string, "% 2dm%2ds", (int)(var_avg_pace_skm / 60), (int)(var_avg_pace_skm % 60));
         LCD.print(time_string);
-        Serial.print("x="); Serial.print(x); Serial.print(" y="); Serial.print(y); Serial.print(" z="); Serial.println(z);
     }
 };
 DisplayMenu menu;
