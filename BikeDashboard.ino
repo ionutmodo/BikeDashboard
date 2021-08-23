@@ -17,8 +17,18 @@
 
     Formula for speed:
         average       us ... 2.35 m
-        3,600,000,000 us ... x km
-        x = speed(km/h) = (3,600,000,000 us * 2.35 m) / average ms / 1000 (m to km) = 8,460,000 / average
+        3,600,000,000 us ... x m
+        x = speed(km/h) = (3,600,000,000 us * (2.35 m / #magnets)) / average ms / 1000 (m to km) = 8,460,000 / average
+                               235[cm]
+            3,600,000,000[us] --------
+                              #magnets                  1          / 3,600,000,000[us] * 235[cm]  \                        1
+        x = --------------------------------------- * --------- = (  ----------------------------- ) * ---------------------------------------
+            avg_diff_btw_2_consecutive_magnets [us]    1000 [m]    \ 1000[m] * 100[cm] * #magnets /    avg_diff_btw_2_consecutive_magnets [us]
+            
+            36,000 * 235                    1
+          = ------------ * ---------------------------------------
+            #magnets       avg_diff_btw_2_consecutive_magnets [us]
+        
     Formula for distance travelled:
         add wheel length at each revolution
     Formula for var_rpm:
@@ -93,12 +103,12 @@ typedef unsigned long ulong;
 
 #define DEFAULT_BAUD_RATE 9600
 #define UPDATE_INTERVAL_US 1000000
-#define MOVING_AVERAGE_WINDOW_SIZE 8
+#define MOVING_AVERAGE_WINDOW_SIZE 4
 #define PULSE_RATIO_THRESHOLD 10
 #define WHEEL_LENGTH_CM 235.0 // wheel circumference
-#define WHEEL_TICKS_PER_REVOLUTION 4.0 // have 4 magnets on the wheel
-#define WHEEL_ARC_CM (WHEEL_LENGTH_CM / WHEEL_TICKS_PER_REVOLUTION) // convert cm to m
-#define CONST_SPEED_KMH (3600000.0 * WHEEL_ARC_CM) // = 8460 000 / WHEEL_TICKS_PER_REVOLUTION;
+#define WHEEL_TICKS_PER_REVOLUTION 4.0 // # magnets attached on the spoke (spiță)
+#define WHEEL_ARC_CM (WHEEL_LENGTH_CM / WHEEL_TICKS_PER_REVOLUTION)
+#define CONST_SPEED_KMH (36000.0 * WHEEL_ARC_CM)
 #define CONST_MAX_INVALID_PULSES 3
 #define CONST_ZERORIZE_SPEED_THRESHOLD_US 3000000 // set it to high value to get smaller speeds
 #define MAX_LCD_DISPLAYS 2
@@ -107,12 +117,11 @@ char line[17];
 char time_string[12]; // "10h35m43s#"
 int display_length;
 byte symbol_celsius_degree[8] = { B01110, B10001, B10001, B01110, B00000, B00000, B00000 };
-volatile ulong pulse_current_micros = 0, pulse_last_time_micros = 0;
-volatile ulong pulse_last_diff_micros = 0, pulse_diff_micros = 0, diff_pulse_ratio = 0, pulse_count_invalids = 0;
+volatile ulong pulse_current_micros = 0, pulse_last_micros = 0;
+volatile ulong pulse_last_diff_micros = 0, pulse_diff_micros = 0, diff_pulse_ratio = 0;
 volatile ulong var_distance_temp = 0, var_distance_total = 0, var_rpm = 0;
-volatile float average_diff = 0, var_speed_kmh = 0;
-float var_max_speed_kmh = 0, var_avg_speed_kmh = 0;
-ulong var_avg_pace_skm = 0, ulong total_moving_time_secs = 0, button_last_value = 0; // use button_last_value to avoid screen bouncing
+volatile float average_diff = 0.0, var_speed_kmh = 0.0, var_max_speed_kmh = 0.0;
+ulong var_avg_pace_skm = 0, total_moving_time_secs = 0, button_last_value = 0; // use button_last_value to avoid screen bouncing
 ulong update_current_micros = 0, update_last_micros = 0, button_last_time_high = 0, button_time_diff = 0;
 
 LiquidCrystal_I2C LCD(LCD_I2C_ADDRESS, LCD_COLS, LCD_ROWS);
@@ -486,15 +495,16 @@ void setup()
 
     var_distance_temp = mem.read_distance(MemoryHandler::MODE_CRT_DIST);
     var_distance_total = mem.read_distance(MemoryHandler::MODE_TOTAL_DIST);
-        
-    pulse_last_time_micros = micros();
-    pulse_last_diff_micros = 0;
-    pulse_count_invalids = 0;
-    update_last_micros = micros();
 
     menu.display_screen();
+
+    Serial.println(CONST_SPEED_KMH);
     
     delay(100);
+
+    pulse_last_diff_micros = 1;
+    pulse_last_micros = micros();
+    update_last_micros = micros();
 }
 
 void loop()
@@ -503,18 +513,24 @@ void loop()
 
     // update display data
     if(update_current_micros - update_last_micros > UPDATE_INTERVAL_US)
-    {
+    {        
         update_last_micros = update_current_micros;
         mem.write_distance(var_distance_temp, MemoryHandler::MODE_CRT_DIST);
         mem.write_distance(var_distance_total, MemoryHandler::MODE_TOTAL_DIST);
         
         var_avg_pace_skm = (ulong)(timeClock.get_total_seconds() / ((ulong)var_distance_temp / 100000.0));
-        if(var_speed_kmh > 0.01) // for 2.35m as wheel diameter and CONST_ZERORIZE_SPEED_THRESHOLD_US=3000000ms, min speed is 3600000000*0.00235/3000000=2.82
+        if(var_speed_kmh > 0.01)
         {
             timeClock.tick();
             avgSpeed.add(var_speed_kmh);
         }
-
+        
+        // set speed to zero if no pulses are received for a specific time
+        if(micros() - pulse_last_micros > CONST_ZERORIZE_SPEED_THRESHOLD_US)
+        {
+            var_speed_kmh = 0.00;
+        }
+        
         menu.display_screen();
     }
 
@@ -554,76 +570,24 @@ void loop()
             }
         }
     }
-    
-    // set speed to zero if no pulses are received for a specific time
-    if(micros() - pulse_last_time_micros > CONST_ZERORIZE_SPEED_THRESHOLD_US)
-    {
-        var_speed_kmh = 0.00;
-    }
 }
 
 void ISR_count_hall_pulses()
 {
     pulse_current_micros = micros();
-    pulse_diff_micros = pulse_current_micros - pulse_last_time_micros;
-    diff_pulse_ratio = max(pulse_last_diff_micros, pulse_diff_micros) / min(pulse_last_diff_micros, pulse_diff_micros);
-    if(diff_pulse_ratio > PULSE_RATIO_THRESHOLD) // filter out
-    {
-        ++pulse_count_invalids;
-        if(pulse_count_invalids == CONST_MAX_INVALID_PULSES)
-        {
-            pulse_count_invalids = 0; // reset this counter and reset the state
-            pulse_last_diff_micros = 0; // shold have set it to zero, but above i might have division by zero
-            pulse_last_time_micros = pulse_current_micros;
-        }
-    }
-    else // keep current value
-    {
-        movingAverage.add(pulse_diff_micros);
-        pulse_count_invalids = 0;
-        pulse_last_diff_micros = pulse_diff_micros;
-        pulse_last_time_micros = pulse_current_micros;
-        average_diff = movingAverage.compute_average();
-        var_distance_temp += WHEEL_ARC_CM;
-        var_distance_total += WHEEL_ARC_CM;
-        var_speed_kmh = CONST_SPEED_KMH / average_diff;
+    pulse_diff_micros = pulse_current_micros - pulse_last_micros;
 
-        if(var_speed_kmh > var_max_speed_kmh)
-        {
-            var_max_speed_kmh = var_speed_kmh;
-        }
-    }
-}
-
-void find_i2c_address() {
-    Serial.begin (9600);
-
-  // Leonardo: wait for serial port to connect
-  while (!Serial) 
-    {
-    }
-
-  Serial.println ();
-  Serial.println ("I2C scanner. Scanning ...");
-  byte count = 0;
-  
-  Wire.begin();
-  for (byte i = 8; i < 120; i++)
-  {
-    Wire.beginTransmission (i);
-    if (Wire.endTransmission () == 0)
-      {
-      Serial.print ("Found address: ");
-      Serial.print (i, DEC);
-      Serial.print (" (0x");
-      Serial.print (i, HEX);
-      Serial.println (")");
-      count++;
-      delay (1);  // maybe unneeded?
-      } // end of good response
-  } // end of for loop
-  Serial.println ("Done.");
-  Serial.print ("Found ");
-  Serial.print (count, DEC);
-  Serial.println (" device(s).");
+    movingAverage.add(pulse_diff_micros);
+    
+    pulse_last_diff_micros = pulse_diff_micros;
+    pulse_last_micros = pulse_current_micros;
+    
+    var_distance_temp += WHEEL_ARC_CM;
+    var_distance_total += WHEEL_ARC_CM;
+    
+    average_diff = movingAverage.compute_average();
+    var_speed_kmh = CONST_SPEED_KMH / average_diff;
+    
+    // update max speed
+    var_max_speed_kmh = (var_max_speed_kmh < var_speed_kmh) ? var_speed_kmh : var_max_speed_kmh;
 }
