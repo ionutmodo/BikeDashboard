@@ -16,9 +16,9 @@
     2) moving time, max speed (km/h), avg speed (kmh), avg pace (time/km)
 
     Formula for speed:
-        average  ms ... 2.35 m
-        3600 000 ms ... x km/h !!!
-        x = speed(km/h) = (3 600 000 ms * 2.35 m) / average ms  / 1000 = 8460 / average
+        average       us ... 2.35 m
+        3,600,000,000 us ... x km
+        x = speed(km/h) = (3,600,000,000 us * 2.35 m) / average ms / 1000 (m to km) = 8,460,000 / average
     Formula for distance travelled:
         add wheel length at each revolution
     Formula for var_rpm:
@@ -87,33 +87,33 @@ typedef unsigned long ulong;
 
 // PUSH BUTTON
 #define RESET_DISTANCE_BUTTON_PIN 3 // pin #3 has interrupt 1 (INT1), but I use digitalRead
-#define DISPLAY_NEXT_SCREEN_MS 50
-#define RESET_CRT_DIST_TIMEOUT_MS 3000
-#define RESET_TOTAL_DIST_TIMEOUT_MS 5000
+#define DISPLAY_NEXT_SCREEN_US 50000
+#define RESET_CRT_DIST_TIMEOUT_US 3000000
+#define RESET_TOTAL_DIST_TIMEOUT_US 5000000
 
 #define DEFAULT_BAUD_RATE 9600
-#define UPDATE_INTERVAL_MS 1000
-#define MOVING_AVERAGE_WINDOW_SIZE 2
+#define UPDATE_INTERVAL_US 1000000
+#define MOVING_AVERAGE_WINDOW_SIZE 8
 #define PULSE_RATIO_THRESHOLD 10
-#define WHEEL_LENGTH_CM 235
-#define CONST_SPEED_KMH (3600000 * WHEEL_LENGTH_CM / 100 / 1000) // = 8460
+#define WHEEL_LENGTH_CM 235.0 // wheel circumference
+#define WHEEL_TICKS_PER_REVOLUTION 4.0 // have 4 magnets on the wheel
+#define WHEEL_ARC_CM (WHEEL_LENGTH_CM / WHEEL_TICKS_PER_REVOLUTION) // convert cm to m
+#define CONST_SPEED_KMH (3600000.0 * WHEEL_ARC_CM) // = 8460 000 / WHEEL_TICKS_PER_REVOLUTION;
 #define CONST_MAX_INVALID_PULSES 3
-#define CONST_ZERORIZE_SPEED_THRESHOLD_MS 3000 // set it to high value to get smaller speeds
+#define CONST_ZERORIZE_SPEED_THRESHOLD_US 3000000 // set it to high value to get smaller speeds
 #define MAX_LCD_DISPLAYS 2
 
 char line[17];
 char time_string[12]; // "10h35m43s#"
 int display_length;
 byte symbol_celsius_degree[8] = { B01110, B10001, B10001, B01110, B00000, B00000, B00000 };
-volatile long pulse_current_millis = 0, pulse_last_time_millis = 0;
-volatile long pulse_last_diff_millis = 0, pulse_diff_millis = 0, diff_pulse_ratio = 0, pulse_count_invalids = 0;
-volatile long var_distance_temp = 0, var_distance_total = 0, var_rpm = 0;
+volatile ulong pulse_current_micros = 0, pulse_last_time_micros = 0;
+volatile ulong pulse_last_diff_micros = 0, pulse_diff_micros = 0, diff_pulse_ratio = 0, pulse_count_invalids = 0;
+volatile ulong var_distance_temp = 0, var_distance_total = 0, var_rpm = 0;
 volatile float average_diff = 0, var_speed_kmh = 0;
 float var_max_speed_kmh = 0, var_avg_speed_kmh = 0;
-ulong var_avg_pace_skm = 0;
-ulong total_moving_time_secs = 0;
-ulong update_current_millis = 0, update_last_millis = 0, button_last_time_high = 0, button_time_diff = 0;
-ulong button_last_value = 0; // use this to avoid screen bouncing
+ulong var_avg_pace_skm = 0, ulong total_moving_time_secs = 0, button_last_value = 0; // use button_last_value to avoid screen bouncing
+ulong update_current_micros = 0, update_last_micros = 0, button_last_time_high = 0, button_time_diff = 0;
 
 LiquidCrystal_I2C LCD(LCD_I2C_ADDRESS, LCD_COLS, LCD_ROWS);
 DHT dht(DHT11_PIN, DHT11_TYPE);
@@ -421,9 +421,9 @@ public:
             LCD.setCursor(LCD_COL_TXT_TEMPERATURE, LCD_ROW_TXT_TEMPERATURE);
             LCD.print("Temperature:");
         
-//            LCD.createChar(0, symbol_celsius_degree);
-//            LCD.setCursor(LCD_COL_TXT_TEMPERATURE + 5, LCD_ROW_TXT_TEMPERATURE);
-//            LCD.write(byte(0));
+            // LCD.createChar(0, symbol_celsius_degree);
+            // LCD.setCursor(LCD_COL_TXT_TEMPERATURE + 5, LCD_ROW_TXT_TEMPERATURE);
+            // LCD.write(byte(0));
         
             LCD.setCursor(LCD_COL_TXT_DISTANCE_CRT, LCD_ROW_TXT_DISTANCE_CRT);
             LCD.print("Crt distance:");
@@ -487,10 +487,10 @@ void setup()
     var_distance_temp = mem.read_distance(MemoryHandler::MODE_CRT_DIST);
     var_distance_total = mem.read_distance(MemoryHandler::MODE_TOTAL_DIST);
         
-    pulse_last_time_millis = millis();
-    pulse_last_diff_millis = 0;
+    pulse_last_time_micros = micros();
+    pulse_last_diff_micros = 0;
     pulse_count_invalids = 0;
-    update_last_millis = millis();
+    update_last_micros = micros();
 
     menu.display_screen();
     
@@ -499,17 +499,17 @@ void setup()
 
 void loop()
 {
-    update_current_millis = millis();
+    update_current_micros = micros();
 
     // update display data
-    if(update_current_millis - update_last_millis > UPDATE_INTERVAL_MS)
+    if(update_current_micros - update_last_micros > UPDATE_INTERVAL_US)
     {
-        update_last_millis = update_current_millis;
+        update_last_micros = update_current_micros;
         mem.write_distance(var_distance_temp, MemoryHandler::MODE_CRT_DIST);
         mem.write_distance(var_distance_total, MemoryHandler::MODE_TOTAL_DIST);
         
         var_avg_pace_skm = (ulong)(timeClock.get_total_seconds() / ((ulong)var_distance_temp / 100000.0));
-        if(var_speed_kmh > 0.5) // for 2.35m as wheel diameter and CONST_ZERORIZE_SPEED_THRESHOLD_MS=3000ms, min speed is 3600000*0.00235/3000=2.82
+        if(var_speed_kmh > 0.01) // for 2.35m as wheel diameter and CONST_ZERORIZE_SPEED_THRESHOLD_US=3000000ms, min speed is 3600000000*0.00235/3000000=2.82
         {
             timeClock.tick();
             avgSpeed.add(var_speed_kmh);
@@ -520,43 +520,43 @@ void loop()
 
     if(digitalRead(RESET_DISTANCE_BUTTON_PIN) == HIGH)
     {
-        button_last_time_high = millis();
+        button_last_time_high = micros();
         button_last_value = 0;
     }
     else
     {
-        button_time_diff = millis() - button_last_time_high;
-        if(button_time_diff > RESET_TOTAL_DIST_TIMEOUT_MS)
+        button_time_diff = micros() - button_last_time_high;
+        if(button_time_diff > RESET_TOTAL_DIST_TIMEOUT_US)
         {
-            if(button_last_value != RESET_TOTAL_DIST_TIMEOUT_MS)
+            if(button_last_value != RESET_TOTAL_DIST_TIMEOUT_US)
             {
-                button_last_value = RESET_TOTAL_DIST_TIMEOUT_MS;
+                button_last_value = RESET_TOTAL_DIST_TIMEOUT_US;
                 var_distance_total = 0;
                 mem.write_distance(var_distance_total, MemoryHandler::MODE_TOTAL_DIST);
             }
         }
-        else if(button_time_diff > RESET_CRT_DIST_TIMEOUT_MS)
+        else if(button_time_diff > RESET_CRT_DIST_TIMEOUT_US)
         {
-            if(button_last_value != RESET_CRT_DIST_TIMEOUT_MS)
+            if(button_last_value != RESET_CRT_DIST_TIMEOUT_US)
             {
-                button_last_value = RESET_CRT_DIST_TIMEOUT_MS;
+                button_last_value = RESET_CRT_DIST_TIMEOUT_US;
                 var_distance_temp = 0;
                 timeClock.reset();
                 mem.write_distance(var_distance_temp, MemoryHandler::MODE_CRT_DIST);
             }
         }
-        else if(button_time_diff > DISPLAY_NEXT_SCREEN_MS)
+        else if(button_time_diff > DISPLAY_NEXT_SCREEN_US)
         {
-            if(button_last_value != DISPLAY_NEXT_SCREEN_MS)
+            if(button_last_value != DISPLAY_NEXT_SCREEN_US)
             {
-                button_last_value = DISPLAY_NEXT_SCREEN_MS;
+                button_last_value = DISPLAY_NEXT_SCREEN_US;
                 menu.next_screen();
             }
         }
     }
     
     // set speed to zero if no pulses are received for a specific time
-    if(millis() - pulse_last_time_millis > CONST_ZERORIZE_SPEED_THRESHOLD_MS)
+    if(micros() - pulse_last_time_micros > CONST_ZERORIZE_SPEED_THRESHOLD_US)
     {
         var_speed_kmh = 0.00;
     }
@@ -564,28 +564,28 @@ void loop()
 
 void ISR_count_hall_pulses()
 {
-    pulse_current_millis = millis();
-    pulse_diff_millis = pulse_current_millis - pulse_last_time_millis;
-    diff_pulse_ratio = max(pulse_last_diff_millis, pulse_diff_millis) / min(pulse_last_diff_millis, pulse_diff_millis);
+    pulse_current_micros = micros();
+    pulse_diff_micros = pulse_current_micros - pulse_last_time_micros;
+    diff_pulse_ratio = max(pulse_last_diff_micros, pulse_diff_micros) / min(pulse_last_diff_micros, pulse_diff_micros);
     if(diff_pulse_ratio > PULSE_RATIO_THRESHOLD) // filter out
     {
         ++pulse_count_invalids;
         if(pulse_count_invalids == CONST_MAX_INVALID_PULSES)
         {
             pulse_count_invalids = 0; // reset this counter and reset the state
-            pulse_last_diff_millis = 0; // shold have set it to zero, but above i might have division by zero
-            pulse_last_time_millis = pulse_current_millis;
+            pulse_last_diff_micros = 0; // shold have set it to zero, but above i might have division by zero
+            pulse_last_time_micros = pulse_current_micros;
         }
     }
     else // keep current value
     {
-        movingAverage.add(pulse_diff_millis);
+        movingAverage.add(pulse_diff_micros);
         pulse_count_invalids = 0;
-        pulse_last_diff_millis = pulse_diff_millis;
-        pulse_last_time_millis = pulse_current_millis;
+        pulse_last_diff_micros = pulse_diff_micros;
+        pulse_last_time_micros = pulse_current_micros;
         average_diff = movingAverage.compute_average();
-        var_distance_temp += WHEEL_LENGTH_CM;
-        var_distance_total += WHEEL_LENGTH_CM;
+        var_distance_temp += WHEEL_ARC_CM;
+        var_distance_total += WHEEL_ARC_CM;
         var_speed_kmh = CONST_SPEED_KMH / average_diff;
 
         if(var_speed_kmh > var_max_speed_kmh)
